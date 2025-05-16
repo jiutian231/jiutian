@@ -28,8 +28,25 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("欢迎使用客服机器人！发送消息开始咨询。")
 
 async def forward_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # 这里省略消息转发逻辑，跟之前一样
-    pass
+    user_id = update.message.from_user.id
+    text = update.message.text or ""
+
+    if user_id not in user_sessions:
+        cs_id = get_next_customer_service()
+        if cs_id is None:
+            await update.message.reply_text("当前没有客服在线，请稍后再试。")
+            return
+        user_sessions[user_id] = cs_id
+
+    cs_id = user_sessions[user_id]
+    forward_text = f"来自用户 [{user_id}]: {text}"
+
+    try:
+        await context.bot.send_message(chat_id=cs_id, text=forward_text)
+        await update.message.reply_text("消息已转发给客服，请耐心等待回复。")
+    except Exception as e:
+        logger.error(f"转发消息失败: {e}")
+        await update.message.reply_text("消息转发失败，请稍后再试。")
 
 if __name__ == "__main__":
     application = Application.builder().token(BOT_TOKEN).build()
