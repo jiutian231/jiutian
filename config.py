@@ -1,4 +1,8 @@
 import os
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")  # BotFather 生成的 Token
-GROUP_ID = int(os.getenv("GROUP_ID"))  # 你的话题群组的 ID，带负号
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHANNEL_ID = int(os.getenv("CHANNEL_ID", "0"))
+
+# 从环境变量读取客服ID，多个ID用逗号分隔，转换成整数列表
+cs_str = os.getenv("CUSTOMER_SERVICES", "")
+customer_services = list(map(int, cs_str.split(","))) if cs_str else []
