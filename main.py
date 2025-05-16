@@ -1,72 +1,107 @@
+import os
 import logging
-from telegram import Update, Message, ChatPermissions
-from telegram.ext import Application, MessageHandler, filters, ContextTypes
-from telegram.constants import ChatType
-from config import BOT_TOKEN, GROUP_ID
+import asyncio
+from telegram import Update, ChatPermissions
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-# 设置日志
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+)
 logger = logging.getLogger(__name__)
 
-# 存储用户 ID 对应的 message_thread_id
-user_threads = {}
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHANNEL_ID = int(os.getenv("CHANNEL_ID", "0"))
+cs_str = os.getenv("CUSTOMER_SERVICES", "")
+customer_services = list(map(int, cs_str.split(","))) if cs_str else []
 
-async def forward_to_forum(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    message = update.effective_message
+# 存储客服轮询索引
+current_cs_index = 0
 
-    if not user or not message:
-        return
+# 记录用户与客服会话映射 user_id -> topic_message_thread_id
+user_sessions = {}
 
+# 超时设置，单位秒
+RESPONSE_TIMEOUT = 60 * 5  # 5分钟
+
+
+def get_next_customer_service():
+    global current_cs_index
+    if not customer_services:
+        return None
+    cs = customer_services[current_cs_index]
+    current_cs_index = (current_cs_index + 1) % len(customer_services)
+    return cs
+
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("欢迎使用客服机器人！发送消息开始咨询。")
+
+
+async def forward_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.message.from_user
     user_id = user.id
-    user_name = user.full_name
+    chat_id = update.message.chat_id
+    text = update.message.text
 
-    # 如果这个用户没有记录过线程 ID，就创建一个话题
-    if user_id not in user_threads:
-        topic_title = f"{user_name} ({user_id})"
-        topic = await context.bot.create_forum_topic(chat_id=GROUP_ID, name=topic_title)
-        thread_id = topic.message_thread_id
-        user_threads[user_id] = thread_id
+    if user_id in user_sessions:
+        thread_id = user_sessions[user_id]
     else:
-        thread_id = user_threads[user_id]
+        # 分配客服
+        cs_id = get_next_customer_service()
+        if cs_id is None:
+            await update.message.reply_text("暂时没有可用客服，请稍后再试。")
+            return
 
-    # 转发消息到对应话题
-    if message.text:
-        await context.bot.send_message(
-            chat_id=GROUP_ID,
-            text=f"💬 用户 {user_name}：\n{message.text}",
-            message_thread_id=thread_id
+        # 在频道/群组为该用户创建话题（消息线程）
+        msg = await context.bot.send_message(
+            chat_id=CHANNEL_ID,
+            text=f"新用户 @{user.username or user.first_name} 的会话开始。",
+            message_thread_id=None,
         )
-    elif message.photo:
+        thread_id = msg.message_thread_id
+        user_sessions[user_id] = thread_id
+
+        # 通知客服
+        await context.bot.send_message(
+            chat_id=cs_id,
+            text=f"你被分配到新用户 @{user.username or user.first_name} 的会话。"
+        )
+
+    # 转发消息到对应话题群组线程
+    if update.message.text:
+        await context.bot.send_message(
+            chat_id=CHANNEL_ID,
+            message_thread_id=thread_id,
+            text=f"用户 @{user.username or user.first_name} 说：\n{update.message.text}",
+        )
+    elif update.message.photo:
+        photo = update.message.photo[-1]
         await context.bot.send_photo(
-            chat_id=GROUP_ID,
-            photo=message.photo[-1].file_id,
-            caption=f"📷 用户 {user_name} 发送了图片",
-            message_thread_id=thread_id
+            chat_id=CHANNEL_ID,
+            message_thread_id=thread_id,
+            photo=photo.file_id,
+            caption=f"用户 @{user.username or user.first_name} 发送了图片"
         )
-    elif message.voice:
+    elif update.message.voice:
         await context.bot.send_voice(
-            chat_id=GROUP_ID,
-            voice=message.voice.file_id,
-            caption=f"🎤 用户 {user_name} 发送了语音",
-            message_thread_id=thread_id
+            chat_id=CHANNEL_ID,
+            message_thread_id=thread_id,
+            voice=update.message.voice.file_id,
+            caption=f"用户 @{user.username or user.first_name} 发送了语音"
         )
     else:
-        await context.bot.send_message(
-            chat_id=GROUP_ID,
-            text=f"📎 用户 {user_name} 发送了其他类型的消息。",
-            message_thread_id=thread_id
-        )
+        await update.message.reply_text("暂时不支持此类型消息。")
+
 
 async def main():
     application = Application.builder().token(BOT_TOKEN).build()
 
-    # 处理用户发来的所有消息
-    application.add_handler(MessageHandler(filters.TEXT | filters.PHOTO | filters.VOICE, forward_to_forum))
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(MessageHandler(filters.ALL & (~filters.COMMAND), forward_user_message))
 
-    print("🤖 Bot 已启动")
+    logger.info("🤖 Bot 已启动")
     await application.run_polling()
 
-if __name__ == '__main__':
-    import asyncio
+
+if __name__ == "__main__":
     asyncio.run(main())
